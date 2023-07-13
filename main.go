@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/micaelapucciariello/simplebank/api"
 	db "github.com/micaelapucciariello/simplebank/db/sqlc"
 	"github.com/micaelapucciariello/simplebank/gapi"
@@ -12,6 +14,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"log"
 	"net"
+	"net/http"
 
 	_ "github.com/lib/pq"
 )
@@ -27,6 +30,7 @@ func main() {
 	}
 
 	store := db.NewStore(conn)
+	go runGatewayServer(cfg, store)
 	rungRPCServer(cfg, store)
 }
 
@@ -62,4 +66,37 @@ func rungRPCServer(cfg utils.Config, store db.Store) {
 	}
 
 	log.Printf("gRPC server started at address %v", listener.Addr().String())
+}
+
+func runGatewayServer(cfg utils.Config, store db.Store) {
+	server, err := gapi.NewServer(cfg, store)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("cannot initiate gateway server: %s", err))
+	}
+
+	grpcMux := runtime.NewServeMux()
+
+	// invokes the cancel context function when the execution is completed
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = pb.RegisterSimpleBankHandlerServer(ctx, grpcMux, server)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("cannot create server handler: %s", err))
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/", grpcMux)
+
+	listener, err := net.Listen("tcp", cfg.HTTPServerAddress)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("cannot create listener: %s", err))
+	}
+	log.Printf("HTTP Gateway server listening at address %v", listener.Addr().String())
+	err = http.Serve(listener, mux)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("cannot start HTTP Gateway server: %s", err))
+	}
+
+	log.Printf("HTTP Gateway server started at address %v", listener.Addr().String())
 }
